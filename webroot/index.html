@@ -154,18 +154,18 @@
 
 <script>
 // 模块目录探测：Magisk / KernelSU 在 /data/adb/modules，APatch 在 /data/adb/apd/modules
+// 用 -f 而不用 -x：我们以 `sh 脚本` 方式调用，不需要执行位
 let _cli = null;
 async function getCli() {
   if (_cli) return _cli;
   const probe = 'for d in /data/adb/modules/hidefolder /data/adb/apd/modules/hidefolder; do'
-    + ' [ -x "$d/scripts/cli.sh" ] && { echo "$d"; break; }; done';
+    + ' [ -f "$d/scripts/cli.sh" ] && { echo "$d"; break; }; done';
+  let dir = '';
   try {
-    const r = await ksu.exec(probe);
-    const dir = (r.stdout || '').trim().split('\n')[0];
-    _cli = (dir ? dir : '/data/adb/modules/hidefolder') + '/scripts/cli.sh';
-  } catch (e) {
-    _cli = '/data/adb/modules/hidefolder/scripts/cli.sh';
-  }
+    const r = await suExec(probe);
+    if (r.errno === 0) dir = r.stdout.split('\n')[0].trim();
+  } catch (e) { /* ksu 不可用时保持默认路径，外层会报友好错误 */ }
+  _cli = (dir ? dir : '/data/adb/modules/hidefolder') + '/scripts/cli.sh';
   return _cli;
 }
 let scope = 'global';
@@ -183,14 +183,31 @@ function esc(s) {
   return "'" + String(s).replace(/'/g, "'\\''") + "'";
 }
 
+// 兼容不同 WebUI 的 ksu.exec 实现：
+// 标准实现返回 {errno, stdout, stderr}；部分实现成功时返回字符串、失败时直接抛错
+async function rawExec(cmd) {
+  const r = await ksu.exec(cmd);
+  if (typeof r === 'string') return { errno: 0, stdout: r, stderr: '' };
+  return { errno: (r && r.errno) || 0, stdout: (r && r.stdout) || '', stderr: (r && r.stderr) || '' };
+}
+
 async function suExec(cmd) {
-  if (window.ksu && typeof ksu.exec === 'function') {
-    const r = await ksu.exec(cmd);
+  if (!(window.ksu && typeof ksu.exec === 'function')) {
+    throw new Error('当前环境不支持 ksu.exec，请在 Magisk / KernelSU / APatch 的模块 WebUI 中打开');
+  }
+  try {
+    const r = await rawExec(cmd);
     // 不在这里按 errno 抛错：cli.sh 的业务错误（ERR|xxx）也是 exit 1，
     // 具体原因在 stdout 里，要透传给调用方解析
-    return { errno: r.errno || 0, stdout: (r.stdout || '').trim(), stderr: (r.stderr || '').trim() };
+    return { errno: r.errno, stdout: String(r.stdout).trim(), stderr: String(r.stderr).trim(), cmd };
+  } catch (e) {
+    return { errno: 1, stdout: '', stderr: String((e && e.message) || e), cmd };
   }
-  throw new Error('当前环境不支持 ksu.exec，请在 Magisk / KernelSU / APatch 的模块 WebUI 中打开');
+}
+
+// 把真实失败原因拼出来，不再只显示"命令执行失败"四个字
+function fmtErr(r) {
+  return '执行失败 errno=' + r.errno + (r.stderr ? '：' + r.stderr : '（无错误输出）');
 }
 
 function escHtml(s) {
@@ -211,8 +228,10 @@ async function refresh() {
       suExec('sh ' + esc(cli) + ' list'),
       suExec('sh ' + esc(cli) + ' status')
     ]);
-    if (listR.errno !== 0 || statusR.errno !== 0)
-      throw new Error(listR.stderr || statusR.stderr || '命令执行失败');
+    if (listR.errno !== 0 || statusR.errno !== 0) {
+      const bad = listR.errno !== 0 ? listR : statusR;
+      throw new Error(fmtErr(bad) + '\n' + bad.cmd);
+    }
     const m = statusR.stdout.match(/rules=(\d+) enabled=(\d+) hidden=(\d+)/);
     if (m) {
       document.getElementById('st-rules').textContent = m[1];
@@ -222,7 +241,7 @@ async function refresh() {
     renderRules(listR.stdout);
   } catch (e) {
     document.getElementById('rule-list').innerHTML =
-      '<div class="empty-tip">' + escHtml(e.message) + '</div>';
+      '<div class="empty-tip">' + escHtml(e.message).replace(/\n/g, '<br>') + '</div>';
   }
 }
 
@@ -255,7 +274,7 @@ async function runCli(args, okMsg) {
     const r = await suExec('sh ' + esc(await getCli()) + ' ' + args);
     const line = (r.stdout.split('\n').pop() || '').trim();
     if (line.startsWith('ERR|')) { toast(line.slice(4)); return false; }
-    if (r.errno !== 0) { toast(r.stderr || line || '命令执行失败'); return false; }
+    if (r.errno !== 0) { toast(fmtErr(r)); return false; }
     toast(okMsg || line.replace(/^OK\|/, ''));
     return true;
   } catch (e) {
@@ -284,7 +303,7 @@ async function toggleRule(id, on) {
     const r = await suExec('sh ' + esc(await getCli()) + (on ? ' enable ' : ' disable ') + esc(String(id)));
     const line = (r.stdout.split('\n').pop() || '').trim();
     if (line.startsWith('ERR|')) toast(line.slice(4));
-    else if (r.errno !== 0) toast(r.stderr || '命令执行失败');
+    else if (r.errno !== 0) toast(fmtErr(r));
     else toast(line.replace(/^OK\|/, ''));
   } catch (e) {
     toast(e.message);
