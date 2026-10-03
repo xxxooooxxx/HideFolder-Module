@@ -3,6 +3,9 @@
 ui_print "- 正在安装 HideFolder ..."
 mkdir -p "$MODPATH/empty" "$MODPATH/scripts" "$MODPATH/webroot"
 chmod 755 "$MODPATH"/scripts/*.sh
+# 开机脚本必须可执行：Magisk / KernelSU / APatch 都是直接 exec 执行它们，
+# zip 包里的 644 权限会导致开机挂载逻辑完全不运行
+chmod 755 "$MODPATH"/post-fs-data.sh "$MODPATH"/service.sh "$MODPATH"/uninstall.sh
 chmod 644 "$MODPATH/module.prop"
 : > "$MODPATH/rules.txt"
 : > "$MODPATH/active.txt"

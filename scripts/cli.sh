@@ -57,7 +57,8 @@ do_add() {
   path="$(clean_arg "$2")"
   valid_scope "$scope" || { echo "ERR|scope 非法"; exit 1; }
   valid_path "$path" || { echo "ERR|path 非法：需为绝对路径且不含 |"; exit 1; }
-  if grep -q -F "|$scope|$path" "$RULES" 2>/dev/null; then
+  # 重复规则精确匹配（scope + path 完全一致才算重复，子串不算）
+  if awk -F'|' -v s="$scope" -v p="$path" '$3 == s && $4 == p { found = 1 } END { exit !found }' "$RULES" 2>/dev/null; then
     echo "ERR|规则已存在"
     exit 1
   fi
@@ -104,8 +105,11 @@ do_enable_disable() {
   scope="$(echo "$line" | cut -d'|' -f3)"
   path="$(echo "$line" | cut -d'|' -f4-)"
   tmp="$RULES.tmp"
-  awk -F'|' -v id="$id" -v w="$want" 'BEGIN { OFS="|" } $1 == id { $2 = w } { print }' "$RULES" > "$tmp" \
-    && mv "$tmp" "$RULES"
+  if ! awk -F'|' -v id="$id" -v w="$want" 'BEGIN { OFS="|" } $1 == id { $2 = w } { print }' "$RULES" > "$tmp"; then
+    echo "ERR|规则更新失败"
+    exit 1
+  fi
+  mv "$tmp" "$RULES"
   if [ "$want" = "1" ]; then
     if [ -e "$path" ]; then
       if [ "$scope" = "global" ]; then
