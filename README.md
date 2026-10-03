@@ -52,9 +52,23 @@ sh $CLI status                  # 规则数 / 已启用 / 隐藏中
 恢复：umount -l <目标文件夹>                    → 文件原样回来
 ```
 
-- 全局隐藏在 `post-fs-data.sh` 执行（早于 zygote），所有应用继承该挂载
-- 按应用隐藏通过 `nsenter -t <pid> -m` 进入该应用的 mount namespace 执行挂载
-- `service.sh` 在 late_start 补应用全局规则，并起后台循环每 120 秒为新启动的目标应用补应用按应用规则
+Android 有三个特殊点，模块都处理了：
+
+1. **FUSE**：`/storage/emulated/0` 是 FUSE 挂载，真实数据在 `/data/media/0`，
+   各应用看到的都是 FUSE 守护进程转交的内容。全局隐藏时会在 init 的
+   mount namespace 里对下层真实路径做 bind，一处挂载、所有应用经 FUSE
+   全被屏蔽（也覆盖开机前已启动的应用）。
+2. **独立 mount namespace**：每个应用有自己的 mount namespace，运行时添加的
+   全局规则还会逐个 namespace 补挂载；开机早期（`post-fs-data.sh`，zygote
+   启动前）挂载的则会被所有应用继承。
+3. **MediaStore**：系统相册走媒体库数据库而非直接读文件。隐藏时用
+   `content delete` 清掉该路径下的媒体记录（不可用时降级为逐文件触发
+   扫描，系统发现文件不存在会自动删行）；恢复时触发重新扫描加回。
+
+按应用隐藏通过 `nsenter -t <pid> -m` 进入该应用的 mount namespace 执行挂载，
+只影响该应用。注意：媒体库是全局共享的，按应用隐藏对走 MediaStore 读图的
+应用（如相册类）无效，要彻底隐藏请用全局规则。
+
 - 所有操作幂等，重复执行无副作用；日志在 `hidefolder.log`
 
 ## 文件结构

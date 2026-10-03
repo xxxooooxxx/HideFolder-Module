@@ -57,6 +57,8 @@ do_add() {
   path="$(clean_arg "$2")"
   valid_scope "$scope" || { echo "ERR|scope 非法"; exit 1; }
   valid_path "$path" || { echo "ERR|path 非法：需为绝对路径且不含 |"; exit 1; }
+  path="$(norm_path "$path")"
+  [ "$path" = "/" ] && { echo "ERR|不能隐藏根目录"; exit 1; }
   # 重复规则精确匹配（scope + path 完全一致才算重复，子串不算）
   if awk -F'|' -v s="$scope" -v p="$path" '$3 == s && $4 == p { found = 1 } END { exit !found }' "$RULES" 2>/dev/null; then
     echo "ERR|规则已存在"
