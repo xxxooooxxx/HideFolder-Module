@@ -22,7 +22,6 @@ STATE="$MODDIR/active.txt"
 LOGF="$MODDIR/hidefolder.log"
 
 NSENTER="$(command -v nsenter 2>/dev/null)"
-HAS_CONTENT=0; command -v content >/dev/null 2>&1 && HAS_CONTENT=1
 HAS_AM=0; command -v am >/dev/null 2>&1 && HAS_AM=1
 
 log() {
@@ -67,19 +66,6 @@ lower_path_of() {
   esac
 }
 
-media_path_of() {
-  # 换算成 MediaStore _data 里存的格式（/storage/emulated/0/...）
-  case "$1" in
-    /sdcard) echo "/storage/emulated/0" ;;
-    /sdcard/*) echo "/storage/emulated/0${1#/sdcard}" ;;
-    /mnt/sdcard) echo "/storage/emulated/0" ;;
-    /mnt/sdcard/*) echo "/storage/emulated/0${1#/mnt/sdcard}" ;;
-    /storage/self/primary) echo "/storage/emulated/0" ;;
-    /storage/self/primary/*) echo "/storage/emulated/0${1#/storage/self/primary}" ;;
-    *) echo "$1" ;;
-  esac
-}
-
 is_shared_storage() {
   case "$1" in
     /storage/*|/sdcard|/sdcard/*|/mnt/sdcard|/mnt/sdcard/*|/data/media/*) return 0 ;;
@@ -90,28 +76,31 @@ is_shared_storage() {
 # ---------------- mount 基础 ----------------
 
 # 在全局 mount namespace（init 的 ns）里执行命令
+# 注意：不在这里吞掉 stderr，调用方需要把挂载失败的原因记到日志里
 in_global_ns() {
   if [ -n "$NSENTER" ]; then
-    "$NSENTER" -t 1 -m "$@" 2>/dev/null
+    "$NSENTER" -t 1 -m "$@"
   else
-    "$@" 2>/dev/null
+    "$@"
   fi
 }
 
 g_is_mounted() {
   # $1=path：检查全局 ns 里是否已挂载（精确匹配挂载点字段）
-  in_global_ns awk -v p="$1" '$5 == p { found = 1 } END { exit !found }' /proc/self/mountinfo
+  in_global_ns awk -v p="$1" '$5 == p { found = 1 } END { exit !found }' /proc/self/mountinfo 2>/dev/null
 }
 
 g_mount() {
-  # $1=path：在全局 ns 里 bind 空目录（幂等）
+  # $1=path：在全局 ns 里 bind 空目录（幂等），失败原因记日志
+  local err rc
   [ -e "$1" ] || return 0
   if g_is_mounted "$1"; then return 0; fi
-  if in_global_ns mount -o bind "$EMPTY" "$1"; then
+  err="$(in_global_ns mount -o bind "$EMPTY" "$1" 2>&1)"; rc=$?
+  if [ "$rc" = "0" ]; then
     log "mount(global): $1"
     return 0
   fi
-  log "mount(global) FAILED: $1"
+  log "mount(global) FAILED: $1: $err"
   return 1
 }
 
@@ -192,32 +181,15 @@ uri_encode() {
   echo
 }
 
-sql_escape() {
-  # SQL LIKE 转义：' → '', % → \%, _ → \_
-  printf '%s' "$1" | sed "s/'/''/g; s/%/\\\\%/g; s/_/\\\\_/g"
-}
-
 ms_purge() {
-  # $1=用户路径 $2=文件列表文件：从 MediaStore 删除该路径下的记录
-  # 先试 content delete（一次搞定），不行再逐文件触发扫描让系统自己清掉
-  local mp esc uri ok=0 f enc
-  mp="$(media_path_of "$1")"
-  esc="$(sql_escape "$mp")"
-  if [ "$HAS_CONTENT" = "1" ]; then
-    for uri in "content://media/external/file" \
-               "content://media/external/images/media" \
-               "content://media/external/video/media" \
-               "content://media/external/audio/media"; do
-      if content delete --uri "$uri" --where "_data like '$esc/%'" >/dev/null 2>&1; then
-        ok=1
-      fi
-    done
-  fi
-  if [ "$ok" = "1" ]; then
-    log "ms_purge(content): $mp"
-    return 0
-  fi
-  # 兜底：逐文件发扫描广播，文件已不可见时 MediaStore 会自动删除对应行（后台执行）
+  # $1=用户路径 $2=文件列表文件：让 MediaStore 移除该路径下的记录
+  #
+  # 安全方式：逐文件触发系统扫描。此时文件已被 bind 隐藏，扫描器看不到它们，
+  # MediaStore 只会删除数据库中的对应行，绝不触碰文件本身。
+  #
+  # 血的教训：禁止用 `content delete`——在 Android 上它会把文件一起删掉！
+  local mp f enc
+  mp="$1"
   if [ "$HAS_AM" = "1" ] && [ -f "$2" ]; then
     ( while IFS= read -r f; do
         [ -n "$f" ] || continue
@@ -225,6 +197,8 @@ ms_purge() {
         am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d "file://$enc" >/dev/null 2>&1
       done < "$2"
       log "ms_purge(scan): $mp" ) >/dev/null 2>&1 < /dev/null &
+  else
+    log "ms_purge: skipped (no am or empty file list)"
   fi
   return 0
 }
@@ -249,21 +223,39 @@ do_hide_global() {
   # $1=path：全局隐藏
   #  - FUSE 下层真实路径在全局 ns 里挂载（走 FUSE 的应用一次全覆盖）
   #  - 用户路径在所有 mount ns 里挂载（覆盖直接访问、非 FUSE 路径、已运行应用）
-  #  - MediaStore 记录清掉（否则相册还看得到）
-  local path lower flist=""
+  #  - 只有确认至少一处挂载成功后，才写 state 并清理 MediaStore；
+  #    否则回滚并返回失败（绝不能在没藏住的情况下动媒体库）
+  # 返回：0=已隐藏，1=挂载失败
+  local path lower flist="" ok=0
   path="$(norm_path "$1")"
   lower="$(lower_path_of "$path")"
 
-  # content 不可用时才需要预先收集文件列表（供扫描兜底用）
-  if [ "$HAS_CONTENT" = "0" ] && [ "$HAS_AM" = "1" ] \
-      && is_shared_storage "$path" && [ -d "$path" ]; then
+  # 预先收集文件列表（MediaStore 扫描用，此时文件还可见）
+  if [ "$HAS_AM" = "1" ] && is_shared_storage "$path" && [ -d "$path" ]; then
     flist="$MODDIR/.flist.tmp"
     find "$path" -type f 2>/dev/null | head -n 3000 > "$flist"
   fi
 
-  [ -n "$lower" ] && g_mount "$lower"
-  g_mount "$path"
+  [ -n "$lower" ] && g_mount "$lower" && ok=1
+  g_mount "$path" && ok=1
   ns_bind_path "$path"
+
+  # 验证：全局 ns 里至少一处挂载成功才算成功
+  if [ "$ok" = "0" ]; then
+    if g_is_mounted "$path"; then
+      ok=1
+    elif [ -n "$lower" ] && g_is_mounted "$lower"; then
+      ok=1
+    fi
+  fi
+  if [ "$ok" = "0" ]; then
+    log "hide(global) ABORT: mount failed, rolling back: $path"
+    ns_umount_path "$path"
+    [ -n "$lower" ] && g_umount "$lower"
+    g_umount "$path"
+    [ -n "$flist" ] && rm -f "$flist"
+    return 1
+  fi
 
   state_add "global|$path"
   log "hide(global): $path lower=${lower:-none}"
@@ -297,13 +289,15 @@ pids_of() {
 do_hide_app() {
   # $1 = 包名 $2 = path，用 nsenter 进入应用的 mount namespace 单独隐藏
   # 注意：只屏蔽文件直接访问；走系统 MediaStore 读图的应用仍可能看到（媒体库全局共享）
-  local pid ok=1
+  # 返回：0=已隐藏，2=应用未在运行，1=挂载失败
+  local pid ok=1 err
   for pid in $(pids_of "$1"); do
     if ! ns_is_mounted "$pid" "$2"; then
-      if [ -n "$NSENTER" ] && "$NSENTER" -t "$pid" -m mount -o bind "$EMPTY" "$2" 2>/dev/null; then
-        ok=0
+      if [ -n "$NSENTER" ]; then
+        err="$("$NSENTER" -t "$pid" -m mount -o bind "$EMPTY" "$2" 2>&1)" && ok=0 \
+          || log "hide(app=$1) FAILED pid=$pid: $2: $err"
       else
-        log "hide(app=$1) FAILED pid=$pid: $2"
+        log "hide(app=$1) FAILED: nsenter not found"
       fi
     else
       ok=0
@@ -313,6 +307,9 @@ do_hide_app() {
     state_add "app|$1|$2"
     log "hide(app=$1): $2"
     return 0
+  fi
+  if [ -z "$(pids_of "$1")" ]; then
+    return 2
   fi
   return 1
 }

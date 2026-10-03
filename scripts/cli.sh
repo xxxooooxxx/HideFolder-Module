@@ -67,17 +67,34 @@ do_add() {
   id="$(gen_id)"
   echo "$id|1|$scope|$path" >> "$RULES"
   log "rule add: $scope $path"
-  # 立即应用（幂等）
-  if [ -e "$path" ]; then
-    if [ "$scope" = "global" ]; then
-      do_hide_global "$path"
+  apply_one "$scope" "$path" "添加"
+}
+
+# 尝试立即应用一条规则，如实报告结果（绝不谎报成功）
+# $1=scope $2=path $3=动词（添加/启用）
+apply_one() {
+  local scope="$1" path="$2" verb="$3" rc
+  if [ ! -e "$path" ]; then
+    echo "OK|已$verb，路径当前不存在，出现后自动隐藏"
+    return 0
+  fi
+  if [ "$scope" = "global" ]; then
+    if do_hide_global "$path"; then
+      echo "OK|已$verb并隐藏"
     else
-      do_hide_app "$scope" "$path"
+      echo "OK|已$verb，但本次未能立即隐藏（无挂载权限），重启手机后开机自动隐藏"
     fi
   else
-    log "rule add: path not exist now, will apply later: $path"
+    do_hide_app "$scope" "$path"; rc=$?
+    if [ "$rc" = "0" ]; then
+      echo "OK|已$verb并隐藏"
+    elif [ "$rc" = "2" ]; then
+      echo "OK|已$verb，目标应用启动时自动隐藏"
+    else
+      echo "OK|已$verb，但挂载失败，应用下次启动时重试"
+    fi
   fi
-  echo "OK|已添加并应用"
+  return 0
 }
 
 do_del() {
@@ -113,15 +130,8 @@ do_enable_disable() {
   fi
   mv "$tmp" "$RULES"
   if [ "$want" = "1" ]; then
-    if [ -e "$path" ]; then
-      if [ "$scope" = "global" ]; then
-        do_hide_global "$path"
-      else
-        do_hide_app "$scope" "$path"
-      fi
-    fi
     log "rule enable: $scope $path"
-    echo "OK|已启用并应用"
+    apply_one "$scope" "$path" "启用"
   else
     if [ "$scope" = "global" ]; then
       do_show_global "$path"
@@ -146,8 +156,11 @@ do_toggle() {
 }
 
 do_apply() {
-  sh "$(dirname "$0")/apply.sh"
-  echo "OK|已应用全部启用中的规则"
+  if sh "$(dirname "$0")/apply.sh"; then
+    echo "OK|已应用全部启用中的规则"
+  else
+    echo "OK|已应用，部分规则挂载失败（见日志），重启手机后开机自动重试"
+  fi
 }
 
 do_restore() {
