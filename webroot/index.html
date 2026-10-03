@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>HideFolder</title>
+<style>
+  :root {
+    --blue: #2f7bff;
+    --blue-light: #e8f1ff;
+    --bg: #f2f7ff;
+    --card: #ffffff;
+    --text: #1c2b3a;
+    --text-2: #6b7d90;
+    --danger: #ff5a5a;
+    --radius: 18px;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; padding: 16px 16px 40px;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, "PingFang SC", "HarmonyOS Sans SC", "Noto Sans SC", sans-serif;
+    font-size: 15px; line-height: 1.5;
+  }
+  h1 { font-size: 22px; margin: 4px 0 2px; }
+  .sub { color: var(--text-2); font-size: 13px; margin-bottom: 14px; }
+  .card {
+    background: var(--card); border-radius: var(--radius);
+    padding: 16px; margin-bottom: 14px;
+    box-shadow: 0 2px 12px rgba(47,123,255,.08);
+  }
+  .card h2 { font-size: 16px; margin: 0 0 12px; }
+  .stats { display: flex; gap: 10px; }
+  .stat {
+    flex: 1; background: var(--blue-light); border-radius: 14px;
+    padding: 10px; text-align: center;
+  }
+  .stat b { display: block; font-size: 22px; color: var(--blue); }
+  .stat span { font-size: 12px; color: var(--text-2); }
+  label { display: block; font-size: 13px; color: var(--text-2); margin: 10px 0 6px; }
+  input[type=text] {
+    width: 100%; padding: 12px 14px; font-size: 15px;
+    border: 1.5px solid #dbe7f5; border-radius: 14px; outline: none;
+    background: #fbfdff; color: var(--text);
+  }
+  input[type=text]:focus { border-color: var(--blue); }
+  .scope-row { display: flex; gap: 10px; margin-top: 6px; }
+  .scope-opt {
+    flex: 1; text-align: center; padding: 10px; border-radius: 14px;
+    border: 1.5px solid #dbe7f5; font-size: 14px; cursor: pointer; user-select: none;
+    background: #fbfdff;
+  }
+  .scope-opt.active { border-color: var(--blue); background: var(--blue-light); color: var(--blue); font-weight: 600; }
+  .btn {
+    display: block; width: 100%; padding: 13px; margin-top: 14px;
+    border: none; border-radius: 16px; font-size: 16px; font-weight: 600;
+    background: var(--blue); color: #fff; cursor: pointer;
+  }
+  .btn:active { opacity: .85; }
+  .btn.ghost { background: var(--blue-light); color: var(--blue); margin-top: 10px; }
+  .btn.danger-ghost { background: #ffecec; color: var(--danger); margin-top: 10px; }
+  .rule {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 4px; border-bottom: 1px solid #eef3fa;
+  }
+  .rule:last-child { border-bottom: none; }
+  .rule-info { flex: 1; min-width: 0; }
+  .rule-path { font-size: 14px; word-break: break-all; }
+  .badge {
+    display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 20px;
+    margin-top: 4px; margin-right: 6px;
+  }
+  .badge.global { background: var(--blue-light); color: var(--blue); }
+  .badge.app { background: #e9f9ef; color: #1d9e57; }
+  .badge.off { background: #f0f0f0; color: #999; }
+  .del {
+    border: none; background: #ffecec; color: var(--danger);
+    width: 34px; height: 34px; border-radius: 12px; font-size: 16px; cursor: pointer;
+    flex-shrink: 0;
+  }
+  /* iOS 风格开关 */
+  .switch { position: relative; width: 50px; height: 30px; flex-shrink: 0; cursor: pointer; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider {
+    position: absolute; inset: 0; background: #d7e0ea; border-radius: 30px; transition: .2s;
+  }
+  .slider:before {
+    content: ""; position: absolute; width: 26px; height: 26px; left: 2px; top: 2px;
+    background: #fff; border-radius: 50%; transition: .2s;
+    box-shadow: 0 1px 4px rgba(0,0,0,.2);
+  }
+  .switch input:checked + .slider { background: var(--blue); }
+  .switch input:checked + .slider:before { transform: translateX(20px); }
+  .empty-tip { text-align: center; color: var(--text-2); font-size: 14px; padding: 18px 0; }
+  .note { font-size: 12.5px; color: var(--text-2); }
+  .note li { margin-bottom: 6px; }
+  #toast {
+    position: fixed; left: 50%; bottom: 30px; transform: translateX(-50%) translateY(20px);
+    background: rgba(28,43,58,.92); color: #fff; padding: 11px 20px; border-radius: 30px;
+    font-size: 14px; opacity: 0; transition: .25s; pointer-events: none;
+    max-width: 88vw; text-align: center; z-index: 99;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .loading { text-align: center; color: var(--text-2); padding: 30px 0; }
+</style>
+</head>
+<body>
+
+<h1>📁 HideFolder</h1>
+<div class="sub">隐藏文件夹 · 文件不受影响 · 随时恢复</div>
+
+<div class="card">
+  <div class="stats">
+    <div class="stat"><b id="st-rules">-</b><span>规则</span></div>
+    <div class="stat"><b id="st-enabled">-</b><span>已启用</span></div>
+    <div class="stat"><b id="st-hidden">-</b><span>隐藏中</span></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>添加规则</h2>
+  <label>要隐藏的文件夹路径</label>
+  <input type="text" id="in-path" placeholder="/sdcard/DCIM/私密相册" autocomplete="off">
+  <label>隐藏范围</label>
+  <div class="scope-row">
+    <div class="scope-opt active" id="opt-global" onclick="setScope('global')">🌍 全局隐藏</div>
+    <div class="scope-opt" id="opt-app" onclick="setScope('app')">📱 仅对某个应用</div>
+  </div>
+  <div id="pkg-wrap" style="display:none">
+    <label>应用包名</label>
+    <input type="text" id="in-pkg" placeholder="com.tencent.mm" autocomplete="off">
+  </div>
+  <button class="btn" onclick="addRule()">添加并隐藏</button>
+</div>
+
+<div class="card">
+  <h2>规则列表</h2>
+  <div id="rule-list"><div class="loading">加载中…</div></div>
+  <button class="btn ghost" onclick="applyAll()">↻ 应用全部启用中的规则</button>
+  <button class="btn danger-ghost" onclick="restoreAll()">恢复全部隐藏</button>
+</div>
+
+<div class="card">
+  <h2>说明</h2>
+  <ul class="note">
+    <li>原理：用空目录 bind mount 覆盖目标文件夹，文件本身不被删除也不被修改。</li>
+    <li>全局隐藏在开机早期挂载，对所有应用生效；按应用隐藏只进入该应用的空间挂载。</li>
+    <li>禁用 / 删除规则会立即 umount 恢复；卸载模块时也会自动恢复全部。</li>
+    <li>新启动的目标应用由后台服务自动补应用隐藏（约 2 分钟内）。</li>
+  </ul>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const CLI = '/data/adb/modules/hidefolder/scripts/cli.sh';
+let scope = 'global';
+
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.classList.remove('show'), 2200);
+}
+
+// shell 单引号转义
+function esc(s) {
+  return "'" + String(s).replace(/'/g, "'\\''") + "'";
+}
+
+async function suExec(cmd) {
+  if (window.ksu && typeof ksu.exec === 'function') {
+    const r = await ksu.exec(cmd);
+    if (r.errno !== 0) throw new Error((r.stderr || '').trim() || '命令执行失败');
+    return (r.stdout || '').trim();
+  }
+  throw new Error('当前环境不支持 ksu.exec，请在 Magisk / KernelSU / APatch 的模块 WebUI 中打开');
+}
+
+function escHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function setScope(s) {
+  scope = s;
+  document.getElementById('opt-global').classList.toggle('active', s === 'global');
+  document.getElementById('opt-app').classList.toggle('active', s === 'app');
+  document.getElementById('pkg-wrap').style.display = s === 'app' ? 'block' : 'none';
+}
+
+async function refresh() {
+  try {
+    const [listOut, statusOut] = await Promise.all([
+      suExec('sh ' + esc(CLI) + ' list'),
+      suExec('sh ' + esc(CLI) + ' status')
+    ]);
+    const m = statusOut.match(/rules=(\d+) enabled=(\d+) hidden=(\d+)/);
+    if (m) {
+      document.getElementById('st-rules').textContent = m[1];
+      document.getElementById('st-enabled').textContent = m[2];
+      document.getElementById('st-hidden').textContent = m[3];
+    }
+    renderRules(listOut);
+  } catch (e) {
+    document.getElementById('rule-list').innerHTML =
+      '<div class="empty-tip">' + escHtml(e.message) + '</div>';
+  }
+}
+
+function renderRules(out) {
+  const box = document.getElementById('rule-list');
+  const lines = out.split('\n').filter(l => l.trim() && !l.startsWith('#'));
+  if (!lines.length) {
+    box.innerHTML = '<div class="empty-tip">还没有规则，在上方添加一条吧</div>';
+    return;
+  }
+  box.innerHTML = lines.map(line => {
+    const p = line.split('|');
+    const id = p[0], enabled = p[1] === '1', sc = p[2], path = p.slice(3).join('|');
+    const badge = sc === 'global'
+      ? '<span class="badge global">全局</span>'
+      : '<span class="badge app">' + escHtml(sc) + '</span>';
+    const off = enabled ? '' : '<span class="badge off">已禁用</span>';
+    return '<div class="rule">' +
+      '<label class="switch"><input type="checkbox" ' + (enabled ? 'checked' : '') +
+      ' onchange="toggleRule(\'' + escHtml(id) + '\', this.checked)"><span class="slider"></span></label>' +
+      '<div class="rule-info"><div class="rule-path">' + escHtml(path) + '</div>' +
+      badge + off + '</div>' +
+      '<button class="del" onclick="delRule(\'' + escHtml(id) + '\')">🗑</button>' +
+      '</div>';
+  }).join('');
+}
+
+async function runCli(args, okMsg) {
+  try {
+    const out = await suExec('sh ' + esc(CLI) + ' ' + args);
+    const line = out.split('\n').pop();
+    if (line.startsWith('ERR|')) { toast(line.slice(4)); return false; }
+    toast(okMsg || line.replace(/^OK\|/, ''));
+    return true;
+  } catch (e) {
+    toast(e.message);
+    return false;
+  }
+}
+
+async function addRule() {
+  const path = document.getElementById('in-path').value.trim();
+  if (!path.startsWith('/')) { toast('请输入绝对路径，如 /sdcard/DCIM/xxx'); return; }
+  let sc = 'global';
+  if (scope === 'app') {
+    sc = document.getElementById('in-pkg').value.trim();
+    if (!/^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$/.test(sc)) { toast('包名格式不正确'); return; }
+  }
+  if (await runCli('add ' + esc(sc) + ' ' + esc(path))) {
+    document.getElementById('in-path').value = '';
+    document.getElementById('in-pkg').value = '';
+    refresh();
+  }
+}
+
+async function toggleRule(id, on) {
+  try {
+    const out = await suExec('sh ' + esc(CLI) + (on ? ' enable ' : ' disable ') + esc(String(id)));
+    const line = out.split('\n').pop();
+    toast(line.replace(/^(OK|ERR)\|/, ''));
+  } catch (e) {
+    toast(e.message);
+  }
+  refresh();
+}
+
+async function delRule(id) {
+  if (await runCli('del ' + esc(String(id)))) refresh();
+}
+
+async function applyAll() {
+  if (await runCli('apply')) refresh();
+}
+
+async function restoreAll() {
+  if (await runCli('restore')) refresh();
+}
+
+refresh();
+</script>
+</body>
+</html>

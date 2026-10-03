@@ -1,0 +1,4 @@
+*.log
+.DS_Store
+active.txt
+rules.txt
